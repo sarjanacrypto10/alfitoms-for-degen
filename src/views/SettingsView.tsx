@@ -56,10 +56,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onStatusUpdated }) =
 
   const handleReconnect = async () => {
     try {
-      await api.reconnectCollector();
+      const res = await api.reconnectCollector();
       await loadAll();
       onStatusUpdated();
-      showNotice('Triggered WebSocket collector reconnect.');
+      showNotice(
+        res.ok
+          ? 'Triggered WebSocket collector reconnect.'
+          : res.error ?? 'Collector reconnect unavailable in serverless mode.'
+      );
     } catch (err) {
       showNotice(err instanceof Error ? err.message : 'Reconnect failed.');
     }

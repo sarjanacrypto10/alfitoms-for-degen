@@ -42,11 +42,14 @@ ALFITOMS FOR DEGEN is a full-stack Solana memecoin discovery and risk intelligen
 
 ## Hosting & Persistent Worker Requirements
 
-Standard stateless serverless functions (e.g., AWS Lambda, Vercel Functions) terminate idle HTTP handlers and **cannot** maintain a long-lived PumpPortal WebSocket connection.
+### Vercel Deployment (Frontend + Serverless `/api/*`)
+- `vercel.json` routes all `/api/*` endpoints to the Express serverless entrypoint at `api/index.ts`.
+- On Vercel, stateless on-demand features (**Overview**, **DexScreener Market Enrichment**, **Trending Tokens**, **Solana Mainnet RPC Risk Scanner**, **Wallet Intelligence**, **Watchlist**, **Alerts**, **Settings**) run natively via `api/index.ts`.
+- Because Vercel Serverless Functions cannot hold a WebSocket open continuously, the live **PumpPortal WebSocket** collector reports `DISCONNECTED` in serverless mode unless you also host `server.ts` on a stateful Node.js worker and point `VITE_API_BASE_URL` to that worker URL.
 
-To keep live WebSocket detection running continuously:
-1. **Single-Service Stateful Container / VPS**: Run `npm run build && npm run start` on a persistent Node.js host (Fly.io, Railway, Render Background/Web Service, DigitalOcean, or Google Cloud Run with `--min-instances=1` and CPU always allocated).
-2. **Separated Worker Architecture (Recommended for Serverless Web Hosts)**: If hosting the frontend on a serverless platform, run the collector service on a dedicated always-on Node.js worker connected to a shared database (Firestore / Redis / Postgres).
+### Stateful Persistent Worker Hosting (Full 24/7 WebSocket Detection)
+1. **Single-Service Stateful Container / VPS**: Run `npm run build && npm run start` on a persistent Node.js host (Fly.io, Railway, Render Web Service, DigitalOcean, or Google Cloud Run with `--min-instances=1` and CPU always allocated).
+2. **Separated Worker Architecture**: Deploy the frontend on Vercel and run `server.ts` on a persistent Node.js worker, then set `VITE_API_BASE_URL` in Vercel to the worker's HTTPS URL.
 
 ---
 

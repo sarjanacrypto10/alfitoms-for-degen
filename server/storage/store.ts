@@ -1,4 +1,5 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import type {
   AlertItem,
@@ -14,6 +15,13 @@ import type {
   WatchlistItem,
 } from '../../src/types/domain.ts';
 
+export const IS_SERVERLESS = Boolean(
+  process.env.VERCEL ||
+    process.env.VERCEL_ENV ||
+    process.env.AWS_LAMBDA_FUNCTION_NAME ||
+    process.env.NETLIFY
+);
+
 interface PersistedDatabase {
   tokens: Record<string, TokenRecord>;
   tokenEvents: TokenEvent[];
@@ -27,7 +35,24 @@ interface PersistedDatabase {
   settings: PlatformSettings;
 }
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
+function resolveWritableDataDir(): string {
+  const localDir = path.resolve(process.cwd(), 'data');
+  const tmpDir = path.join(os.tmpdir(), 'alfitoms-data');
+  if (IS_SERVERLESS) {
+    return tmpDir;
+  }
+  try {
+    if (!fs.existsSync(localDir)) {
+      fs.mkdirSync(localDir, { recursive: true });
+    }
+    fs.accessSync(localDir, fs.constants.W_OK);
+    return localDir;
+  } catch {
+    return tmpDir;
+  }
+}
+
+const DATA_DIR = resolveWritableDataDir();
 const DB_PATH = path.join(DATA_DIR, 'alfitoms-db.json');
 
 const DEFAULT_PROGRAMS: MonitoredProgram[] = [
@@ -138,8 +163,8 @@ class TerminalStore {
       pumpportal: {
         name: 'pumpportal',
         label: 'PumpPortal WebSocket',
-        status: 'CONNECTING',
-        enabled: true,
+        status: IS_SERVERLESS ? 'DISCONNECTED' : 'CONNECTING',
+        enabled: !IS_SERVERLESS,
         requiresKey: false,
         hasKeyConfigured: Boolean(process.env.PUMPPORTAL_API_KEY?.trim()),
         endpoint: 'wss://pumpportal.fun/api/data',
@@ -149,13 +174,15 @@ class TerminalStore {
         lastSuccessAt: null,
         reconnectCount: 0,
         eventsReceived: 0,
-        lastError: null,
+        lastError: IS_SERVERLESS
+          ? 'Serverless runtime cannot sustain a persistent WebSocket. On-demand Solana RPC & DexScreener APIs remain active; host server.ts on a stateful Node worker for 24/7 WebSocket detection.'
+          : null,
       },
       helius: {
         name: 'helius',
         label: 'Helius Mainnet Stream',
-        status: hasHeliusKey ? 'DISCONNECTED' : 'DISCONNECTED',
-        enabled: this.db.settings.heliusStreamEnabled && hasHeliusKey,
+        status: 'DISCONNECTED',
+        enabled: !IS_SERVERLESS && this.db.settings.heliusStreamEnabled && hasHeliusKey,
         requiresKey: true,
         hasKeyConfigured: hasHeliusKey,
         endpoint: 'wss://mainnet.helius-rpc.com',
@@ -165,7 +192,11 @@ class TerminalStore {
         lastSuccessAt: null,
         reconnectCount: 0,
         eventsReceived: 0,
-        lastError: hasHeliusKey ? null : 'HELIUS_API_KEY not configured (optional).',
+        lastError: !hasHeliusKey
+          ? 'HELIUS_API_KEY not configured (optional).'
+          : IS_SERVERLESS
+            ? 'Helius WebSocket stream requires a stateful Node worker.'
+            : null,
       },
       dexscreener: {
         name: 'dexscreener',
@@ -236,7 +267,11 @@ class TerminalStore {
       }
       if (!fs.existsSync(DB_PATH)) {
         const fresh = createEmptyDb();
-        fs.writeFileSync(DB_PATH, JSON.stringify(fresh, null, 2), 'utf8');
+        try {
+          fs.writeFileSync(DB_PATH, JSON.stringify(fresh, null, 2), 'utf8');
+        } catch {
+          // Non-fatal if filesystem is ephemeral/read-only
+        }
         return fresh;
       }
       const raw = fs.readFileSync(DB_PATH, 'utf8');
@@ -270,6 +305,11 @@ class TerminalStore {
   }
 
   private schedulePersist(): void {
+    if (IS_SERVERLESS) {
+      // Persist synchronously in serverless before invocation ends
+      this.persistNow();
+      return;
+    }
     if (this.saveTimer) return;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;

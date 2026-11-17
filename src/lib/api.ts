@@ -17,6 +17,13 @@ import type {
 const WORKSPACE_STORAGE_KEY = 'alfitoms_workspace_id';
 const ADMIN_TOKEN_STORAGE_KEY = 'alfitoms_admin_token';
 
+export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
+
+export function buildApiUrl(path: string): string {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return API_BASE_URL ? `${API_BASE_URL}${normalizedPath}` : normalizedPath;
+}
+
 export function getWorkspaceId(): string {
   if (typeof window === 'undefined') return 'default-operator';
   let existing = window.localStorage.getItem(WORKSPACE_STORAGE_KEY);
@@ -52,12 +59,25 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set('Content-Type', 'application/json');
   }
 
-  const res = await fetch(path, {
+  const url = buildApiUrl(path);
+  const res = await fetch(url, {
     ...init,
     headers,
   });
 
-  const data = await res.json().catch(() => ({}));
+  const rawText = await res.text().catch(() => '');
+  let data: Record<string, unknown> = {};
+  if (rawText) {
+    try {
+      data = JSON.parse(rawText) as Record<string, unknown>;
+    } catch {
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status} on ${path}: non-JSON server response`);
+      }
+      throw new Error(`Invalid JSON returned from ${path}`);
+    }
+  }
+
   if (!res.ok) {
     throw new Error(
       typeof data?.error === 'string' ? data.error : `Request failed (${res.status})`
@@ -229,7 +249,12 @@ export const api = {
     apiFetch<{ logs: CollectorLogEntry[] }>(`/api/collector/logs?limit=${limit}`),
 
   reconnectCollector: () =>
-    apiFetch<{ ok: boolean; status: CollectorStatusState }>('/api/collector/reconnect', {
+    apiFetch<{
+      ok: boolean;
+      serverless?: boolean;
+      error?: string;
+      status: CollectorStatusState;
+    }>('/api/collector/reconnect', {
       method: 'POST',
     }),
 

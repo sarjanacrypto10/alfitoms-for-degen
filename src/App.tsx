@@ -4,7 +4,7 @@ import type {
   NavSection,
   OverviewResponse,
 } from './types/domain';
-import { api } from './lib/api';
+import { api, buildApiUrl } from './lib/api';
 import { Layout } from './components/Layout';
 import { OverviewView } from './views/OverviewView';
 import { LiveRadarView } from './views/LiveRadarView';
@@ -52,25 +52,38 @@ export default function App() {
     void loadOverview();
   }, [loadOverview]);
 
-  // Subscribe to Server-Sent Events (/api/stream) for real-time updates
+  // Subscribe to Server-Sent Events (/api/stream) for real-time updates on stateful workers;
+  // in serverless deployments, close SSE after initial snapshot and poll cleanly every 30s.
   useEffect(() => {
     let es: EventSource | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
     let closed = false;
+    let isServerlessStream = false;
 
     const connectSse = () => {
-      if (closed) return;
-      es = new EventSource('/api/stream');
+      if (closed || isServerlessStream) return;
+      es = new EventSource(buildApiUrl('/api/stream'));
 
       es.onmessage = (ev) => {
         try {
           const payload = JSON.parse(ev.data) as {
             type?: string;
             status?: CollectorStatusState;
+            serverless?: boolean;
           };
           if (payload.type === 'snapshot' || payload.type === 'collector:status') {
             if (payload.status) {
               setCollectorStatus(payload.status);
+            }
+            if (payload.serverless) {
+              isServerlessStream = true;
+              es?.close();
+              if (!pollTimer) {
+                pollTimer = setInterval(() => {
+                  void loadOverview();
+                }, 30_000);
+              }
             }
           } else if (
             payload.type === 'token:detected' ||
@@ -87,11 +100,11 @@ export default function App() {
 
       es.onerror = () => {
         es?.close();
-        if (!closed && !retryTimer) {
+        if (!closed && !isServerlessStream && !retryTimer) {
           retryTimer = setTimeout(() => {
             retryTimer = null;
             connectSse();
-          }, 4000);
+          }, 5000);
         }
       };
     };
@@ -102,6 +115,7 @@ export default function App() {
       closed = true;
       es?.close();
       if (retryTimer) clearTimeout(retryTimer);
+      if (pollTimer) clearInterval(pollTimer);
     };
   }, [loadOverview]);
 
