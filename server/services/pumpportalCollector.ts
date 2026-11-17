@@ -116,9 +116,15 @@ class PumpPortalCollector {
       newToken: false,
       migration: false,
     };
-    // Free documented subscriptions only; paid/metered methods are never auto-enabled.
-    ws.send(JSON.stringify({ method: 'subscribeNewToken' }));
-    ws.send(JSON.stringify({ method: 'subscribeMigration' }));
+    try {
+      // Free documented subscriptions only; paid/metered methods are never auto-enabled.
+      ws.send(JSON.stringify({ method: 'subscribeNewToken' }));
+      ws.send(JSON.stringify({ method: 'subscribeMigration' }));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Subscription send failed';
+      store.collectorStatus.pumpportal.lastError = msg;
+      store.addLog('pumpportal', 'error', `Failed sending subscriptions: ${msg}`);
+    }
   }
 
   private markVerifiedLive(reason: string): void {
