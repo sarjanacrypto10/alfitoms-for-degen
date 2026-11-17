@@ -85,7 +85,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
           />
           <span className="text-[#646D7D]" aria-hidden="true">·</span>
           <CollectorStatusLabelText
-            status={collectorStatus.helius.enabled ? collectorStatus.helius.status : 'DISCONNECTED'}
+            status={collectorStatus.helius.status}
             label="Helius"
           />
           <button

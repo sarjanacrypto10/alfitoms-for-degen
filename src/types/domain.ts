@@ -2,6 +2,7 @@ export type CollectorStatusLabel =
   | 'LIVE'
   | 'CONNECTING'
   | 'DISCONNECTED'
+  | 'OPTIONAL / SKIPPED'
   | 'DEMO'
   | 'ERROR';
 

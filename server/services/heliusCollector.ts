@@ -12,25 +12,12 @@ class HeliusCollector {
   private isPongPending = false;
 
   public syncWithSettings(): void {
-    const apiKey = process.env.HELIUS_API_KEY?.trim();
-    const enabled = store.getSettings().heliusStreamEnabled;
-
-    store.collectorStatus.helius.hasKeyConfigured = Boolean(apiKey);
-    store.collectorStatus.helius.enabled = Boolean(apiKey && enabled);
-
-    if (!apiKey) {
-      this.stop('HELIUS_API_KEY not configured (optional paid/metered service).');
-      return;
-    }
-    if (!enabled) {
-      this.stop('Helius WebSocket stream disabled in Settings (free-first default).');
-      return;
-    }
-
-    this.connect(apiKey);
+    // Helius integration is intentionally skipped so PumpPortal operates standalone
+    // without requiring HELIUS_API_KEY.
+    this.stop('Helius integration skipped (OPTIONAL / SKIPPED; HELIUS_API_KEY not required).');
   }
 
-  public stop(reason = 'Helius stream disabled.'): void {
+  public stop(reason = 'Helius integration skipped (OPTIONAL / SKIPPED).'): void {
     if (this.connectTimeoutTimer) {
       clearTimeout(this.connectTimeoutTimer);
       this.connectTimeoutTimer = null;
@@ -52,7 +39,8 @@ class HeliusCollector {
       }
       this.ws = null;
     }
-    store.collectorStatus.helius.status = 'DISCONNECTED';
+    store.collectorStatus.helius.enabled = false;
+    store.collectorStatus.helius.status = 'OPTIONAL / SKIPPED';
     store.collectorStatus.helius.lastError = reason;
     store.recomputeStatusCounters();
     eventBus.emitStream({ type: 'collector:status', status: store.collectorStatus });

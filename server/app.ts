@@ -14,7 +14,6 @@ import {
 } from './services/dexScreenerService.ts';
 import { eventBus } from './services/eventBus.ts';
 import { generateOnDemandTokenBrief } from './services/geminiBriefService.ts';
-import { heliusCollector } from './services/heliusCollector.ts';
 import { pumpportalCollector } from './services/pumpportalCollector.ts';
 import {
   inspectStandaloneWallet,
@@ -720,9 +719,10 @@ export function createApiApp(): express.Express {
       },
       helius: {
         optional: true,
+        skipped: true,
         status: st.helius.status,
-        connected: st.helius.status === 'LIVE',
-        enabled: st.helius.enabled,
+        connected: false,
+        enabled: false,
         hasKeyConfigured: st.helius.hasKeyConfigured,
         endpoint: st.helius.endpoint,
         lastConnectedAt: st.helius.lastConnectedAt,
@@ -755,23 +755,22 @@ export function createApiApp(): express.Express {
     }
     if (IS_SERVERLESS) {
       store.collectorStatus.pumpportal.status = 'DISCONNECTED';
-      store.collectorStatus.helius.status = 'DISCONNECTED';
+      store.collectorStatus.helius.status = 'OPTIONAL / SKIPPED';
       store.addLog(
         'system',
         'warn',
-        'Collector reconnect ignored on serverless runtime; persistent WebSocket requires stateful Node host.'
+        'Collector reconnect ignored on serverless runtime; persistent WebSocket requires worker.ts.'
       );
       res.status(200).json({
         ok: false,
         serverless: true,
         error:
-          'Persistent WebSocket collectors cannot run inside Vercel Serverless Functions. Host server.ts on a stateful Node worker or set VITE_API_BASE_URL.',
+          'Persistent WebSocket collectors cannot run inside Vercel Serverless Functions. Deploy worker.ts and set COLLECTOR_WORKER_URL or VITE_API_BASE_URL.',
         status: store.collectorStatus,
       });
       return;
     }
     pumpportalCollector.reconnectNow();
-    heliusCollector.syncWithSettings();
     res.json({ ok: true, status: store.collectorStatus });
   });
 
@@ -813,9 +812,6 @@ export function createApiApp(): express.Express {
       createdAt: new Date().toISOString(),
     };
     store.addMonitoredProgram(prog);
-    if (!IS_SERVERLESS) {
-      heliusCollector.syncWithSettings();
-    }
     res.json(prog);
   });
 
@@ -832,9 +828,6 @@ export function createApiApp(): express.Express {
       res.status(404).json({ error: 'Program not found.' });
       return;
     }
-    if (!IS_SERVERLESS) {
-      heliusCollector.syncWithSettings();
-    }
     res.json(updated);
   });
 
@@ -844,9 +837,6 @@ export function createApiApp(): express.Express {
       return;
     }
     const deleted = store.deleteMonitoredProgram(req.params.id);
-    if (!IS_SERVERLESS) {
-      heliusCollector.syncWithSettings();
-    }
     res.json({ deleted });
   });
 
@@ -873,10 +863,7 @@ export function createApiApp(): express.Express {
     }
     const patch = req.body ?? {};
     const updated = store.updateSettings({
-      heliusStreamEnabled:
-        typeof patch.heliusStreamEnabled === 'boolean'
-          ? patch.heliusStreamEnabled
-          : undefined,
+      heliusStreamEnabled: false,
       pumpPortalAutoReconnect:
         typeof patch.pumpPortalAutoReconnect === 'boolean'
           ? patch.pumpPortalAutoReconnect
@@ -887,9 +874,6 @@ export function createApiApp(): express.Express {
           : undefined,
       alertRules: patch.alertRules,
     });
-    if (!IS_SERVERLESS) {
-      heliusCollector.syncWithSettings();
-    }
     res.json(updated);
   });
 

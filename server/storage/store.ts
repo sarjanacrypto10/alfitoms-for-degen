@@ -191,9 +191,9 @@ class TerminalStore {
       helius: {
         name: 'helius',
         label: 'Helius Mainnet Stream',
-        status: 'DISCONNECTED',
-        enabled: !IS_SERVERLESS && this.db.settings.heliusStreamEnabled && hasHeliusKey,
-        requiresKey: true,
+        status: 'OPTIONAL / SKIPPED',
+        enabled: false,
+        requiresKey: false,
         hasKeyConfigured: hasHeliusKey,
         endpoint: 'wss://mainnet.helius-rpc.com',
         lastConnectedAt: null,
@@ -202,11 +202,8 @@ class TerminalStore {
         lastSuccessAt: null,
         reconnectCount: 0,
         eventsReceived: 0,
-        lastError: !hasHeliusKey
-          ? 'HELIUS_API_KEY not configured (optional).'
-          : IS_SERVERLESS
-            ? 'Helius WebSocket stream requires a stateful Node worker.'
-            : null,
+        lastError:
+          'Helius integration skipped (OPTIONAL / SKIPPED). PumpPortal runs standalone without HELIUS_API_KEY.',
       },
       dexscreener: {
         name: 'dexscreener',
@@ -709,16 +706,11 @@ class TerminalStore {
 
     const scope: string[] = [];
     if (this.collectorStatus.pumpportal.status === 'LIVE') {
-      scope.push('PumpPortal WS (New Tokens & Migrations)');
+      scope.push('PumpPortal WS (subscribeNewToken & subscribeMigration)');
     } else {
       scope.push(`PumpPortal WS (${this.collectorStatus.pumpportal.status})`);
     }
-    if (this.collectorStatus.helius.enabled && this.collectorStatus.helius.status === 'LIVE') {
-      const activeHeliusProgs = this.db.monitoredPrograms.filter(
-        (p) => p.enabled && p.activeSource === 'helius_ws'
-      );
-      scope.push(`Helius WS (${activeHeliusProgs.length} programs)`);
-    }
+    scope.push('Helius WS (OPTIONAL / SKIPPED)');
     scope.push('DexScreener Public API (On-Demand & Cached)');
     scope.push('Solana Mainnet RPC (Deterministic Audits)');
 

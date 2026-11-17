@@ -3,7 +3,6 @@ import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { createApiApp } from './server/app.ts';
-import { heliusCollector } from './server/services/heliusCollector.ts';
 import { pumpportalCollector } from './server/services/pumpportalCollector.ts';
 
 import { store } from './server/storage/store.ts';
@@ -31,15 +30,14 @@ async function startServer(): Promise<void> {
 
   const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`[ALFITOMS FOR DEGEN] Server running on http://0.0.0.0:${PORT}`);
-    // Boot persistent server-side WebSocket collectors
+    console.log('[ALFITOMS FOR DEGEN] Helius integration: OPTIONAL / SKIPPED');
+    // Boot persistent server-side PumpPortal WebSocket collector
     pumpportalCollector.start();
-    heliusCollector.syncWithSettings();
   });
 
   const shutdown = (signal: string) => {
     console.log(`[ALFITOMS FOR DEGEN] Received ${signal}, flushing persisted store...`);
     pumpportalCollector.stop();
-    heliusCollector.stop('Server shutting down.');
     store.persistNow();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 3000).unref();

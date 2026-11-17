@@ -69,18 +69,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onStatusUpdated }) =
     }
   };
 
-  const handleToggleHelius = async (enabled: boolean) => {
-    try {
-      const updated = await api.updateSettings({ heliusStreamEnabled: enabled });
-      setSettings(updated);
-      await loadAll();
-      onStatusUpdated();
-      showNotice(`Helius stream ${enabled ? 'enabled' : 'disabled'}.`);
-    } catch (err) {
-      showNotice(err instanceof Error ? err.message : 'Failed updating Helius setting.');
-    }
-  };
-
   const handleToggleDemo = async (enabled: boolean) => {
     await api.toggleDemoMode(enabled);
     await loadAll();
@@ -202,13 +190,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onStatusUpdated }) =
                 <span className="font-mono-num text-emerald-400">ACTIVE (NO KEY NEEDED)</span>
               </div>
               <div className="px-3 py-2 flex items-center justify-between">
-                <span className="text-[#9AA3B2]">HELIUS_API_KEY (Optional RPC / Stream)</span>
-                <span
-                  className={`font-mono-num ${
-                    capabilities.heliusKeyConfigured ? 'text-emerald-400' : 'text-[#646D7D]'
-                  }`}
-                >
-                  {capabilities.heliusKeyConfigured ? 'CONFIGURED' : 'NOT SET'}
+                <span className="text-[#9AA3B2]">Helius Integration (Skipped)</span>
+                <span className="font-mono-num text-[#646D7D]">
+                  OPTIONAL / SKIPPED
                 </span>
               </div>
               <div className="px-3 py-2 flex items-center justify-between">
@@ -236,23 +220,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onStatusUpdated }) =
 
           {settings && (
             <div className="space-y-3 pt-2">
-              <label className="flex items-center justify-between cursor-pointer">
+              <div className="flex items-center justify-between opacity-75">
                 <div>
                   <div className="text-[#E4E7EC] font-medium">
-                    Enable Helius WebSocket Stream (Metered)
+                    Helius WebSocket Stream (OPTIONAL / SKIPPED)
                   </div>
                   <div className="text-[11px] text-[#646D7D]">
-                    Disabled by default to preserve free credits. Requires HELIUS_API_KEY.
+                    Disabled so PumpPortal runs as the standalone primary live stream without requiring HELIUS_API_KEY.
                   </div>
                 </div>
-                <input
-                  type="checkbox"
-                  disabled={!capabilities?.heliusKeyConfigured}
-                  checked={settings.heliusStreamEnabled}
-                  onChange={(e) => void handleToggleHelius(e.target.checked)}
-                  className="accent-[#D4AF37]"
-                />
-              </label>
+                <span className="font-mono-num text-[11px] text-[#646D7D]">SKIPPED</span>
+              </div>
 
               <label className="flex items-center justify-between cursor-pointer">
                 <div>

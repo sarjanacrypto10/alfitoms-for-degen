@@ -89,6 +89,8 @@ export function getCollectorStatusColor(status: CollectorStatusLabel): string {
       return 'text-[#E5C76B]';
     case 'ERROR':
       return 'text-red-400';
+    case 'OPTIONAL / SKIPPED':
+      return 'text-[#646D7D]';
     case 'DISCONNECTED':
     default:
       return 'text-[#9AA3B2]';

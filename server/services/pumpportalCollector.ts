@@ -37,6 +37,7 @@ class PumpPortalCollector {
   private ws: WebSocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private connectTimeoutTimer: NodeJS.Timeout | null = null;
+  private subscriptionVerifyTimer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private backoffMs = 1500;
   private maxBackoffMs = 60_000;
@@ -81,6 +82,10 @@ class PumpPortalCollector {
       clearTimeout(this.connectTimeoutTimer);
       this.connectTimeoutTimer = null;
     }
+    if (this.subscriptionVerifyTimer) {
+      clearTimeout(this.subscriptionVerifyTimer);
+      this.subscriptionVerifyTimer = null;
+    }
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
@@ -114,6 +119,21 @@ class PumpPortalCollector {
     // Free documented subscriptions only; paid/metered methods are never auto-enabled.
     ws.send(JSON.stringify({ method: 'subscribeNewToken' }));
     ws.send(JSON.stringify({ method: 'subscribeMigration' }));
+  }
+
+  private markVerifiedLive(reason: string): void {
+    if (this.subscriptionVerifyTimer) {
+      clearTimeout(this.subscriptionVerifyTimer);
+      this.subscriptionVerifyTimer = null;
+    }
+    const wasLive = store.collectorStatus.pumpportal.status === 'LIVE';
+    store.collectorStatus.pumpportal.status = 'LIVE';
+    store.collectorStatus.pumpportal.lastError = null;
+    if (!wasLive) {
+      store.recomputeStatusCounters();
+      store.addLog('pumpportal', 'info', `PumpPortal stream verified LIVE (${reason}).`);
+      eventBus.emitStream({ type: 'collector:status', status: store.collectorStatus });
+    }
   }
 
   private connect(): void {
@@ -162,7 +182,7 @@ class PumpPortalCollector {
       this.isPongPending = false;
       this.lastActivityMs = Date.now();
 
-      store.collectorStatus.pumpportal.status = 'LIVE';
+      // Remain CONNECTING until PumpPortal confirms subscription or delivers a real WS frame/pong
       store.collectorStatus.pumpportal.lastConnectedAt = now;
       store.collectorStatus.pumpportal.lastHeartbeatAt = now;
       store.collectorStatus.pumpportal.lastError = null;
@@ -173,9 +193,25 @@ class PumpPortalCollector {
       store.addLog(
         'pumpportal',
         'info',
-        'Connected to PumpPortal WebSocket. Subscribed to subscribeNewToken & subscribeMigration.'
+        'PumpPortal WS socket opened; sent subscribeNewToken & subscribeMigration, awaiting confirmation.'
       );
       eventBus.emitStream({ type: 'collector:status', status: store.collectorStatus });
+
+      this.subscriptionVerifyTimer = setTimeout(() => {
+        if (
+          this.ws === ws &&
+          ws.readyState === WebSocket.OPEN &&
+          store.collectorStatus.pumpportal.status !== 'LIVE'
+        ) {
+          const verifyErr =
+            'PumpPortal opened socket but did not confirm subscribeNewToken/subscribeMigration within 10s; reconnecting.';
+          store.collectorStatus.pumpportal.status = 'ERROR';
+          store.collectorStatus.pumpportal.lastError = verifyErr;
+          store.addLog('pumpportal', 'warn', verifyErr);
+          eventBus.emitStream({ type: 'collector:status', status: store.collectorStatus });
+          ws.terminate();
+        }
+      }, 10_000);
 
       this.heartbeatTimer = setInterval(() => {
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
@@ -244,7 +280,8 @@ class PumpPortalCollector {
 
       store.collectorStatus.pumpportal.status = 'DISCONNECTED';
       store.collectorStatus.pumpportal.lastError =
-        preservedError && preservedError.includes('timed out')
+        preservedError &&
+        (preservedError.includes('timed out') || preservedError.includes('did not confirm'))
           ? preservedError
           : `Disconnected (${reasonStr})`;
       store.recomputeStatusCounters();
@@ -297,12 +334,17 @@ class PumpPortalCollector {
       }
       store.collectorStatus.pumpportal.subscriptionsAcked = acks;
       store.addLog('pumpportal', 'info', `PumpPortal notice: ${notice}`);
-      eventBus.emitStream({ type: 'collector:status', status: store.collectorStatus });
+      if (acks.newToken || acks.migration) {
+        this.markVerifiedLive(notice);
+      } else {
+        eventBus.emitStream({ type: 'collector:status', status: store.collectorStatus });
+      }
       return;
     }
 
     const mint = typeof payload.mint === 'string' ? payload.mint.trim() : '';
     if (!mint) return;
+    this.markVerifiedLive(`event for ${mint.slice(0, 6)}`);
 
     const now = new Date().toISOString();
     const signature =

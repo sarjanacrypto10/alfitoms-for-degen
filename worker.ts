@@ -3,7 +3,6 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import { createApiApp } from './server/app.ts';
-import { heliusCollector } from './server/services/heliusCollector.ts';
 import { pumpportalCollector } from './server/services/pumpportalCollector.ts';
 import { store } from './server/storage/store.ts';
 
@@ -38,17 +37,15 @@ function startWorker(): void {
   });
 
   const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[ALFITOMS WORKER] Always-on collector listening on http://0.0.0.0:${PORT}`);
-    // Boot primary free PumpPortal WebSocket collector independently of Helius
+    console.log(`[ALFITOMS WORKER] Always-on PumpPortal worker listening on http://0.0.0.0:${PORT}`);
+    console.log('[ALFITOMS WORKER] Helius integration: OPTIONAL / SKIPPED');
+    // Boot primary free PumpPortal WebSocket collector (subscribeNewToken & subscribeMigration)
     pumpportalCollector.start();
-    // Optional Helius WebSocket stream (only connects if HELIUS_API_KEY + setting enabled)
-    heliusCollector.syncWithSettings();
   });
 
   const shutdown = (signal: string) => {
     console.log(`[ALFITOMS WORKER] Received ${signal}, flushing store and closing sockets...`);
     pumpportalCollector.stop();
-    heliusCollector.stop('Worker shutting down.');
     store.persistNow();
     server.close(() => {
       process.exit(0);
