@@ -11,7 +11,22 @@ const PORT = Number(process.env.PORT || 3000);
 function startWorker(): void {
   const app = createApiApp();
 
-  // Root health/info route so PaaS health checks (Railway, Render, Fly.io, Cloud Run) succeed cleanly
+  // Direct health check alias for PaaS probes (Railway, Fly.io, Render, Cloud Run)
+  app.get('/health', (_req, res) => {
+    store.recomputeStatusCounters();
+    res.json({
+      ok: true,
+      service: 'ALFITOMS FOR DEGEN Collector Worker',
+      network: 'solana-mainnet',
+      collectorLive: store.collectorStatus.pumpportal.status === 'LIVE',
+      pumpportal: store.collectorStatus.pumpportal,
+      helius: store.collectorStatus.helius,
+      storage: store.getStorageStats(),
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // Root info/health route so standalone Railway worker URLs respond cleanly
   const distDir = path.resolve(process.cwd(), 'dist');
   if (fs.existsSync(distDir)) {
     app.use(express.static(distDir));
@@ -29,15 +44,24 @@ function startWorker(): void {
       service: 'ALFITOMS FOR DEGEN Collector Worker',
       network: 'solana-mainnet',
       collectorStatus: store.collectorStatus,
-      healthEndpoint: '/api/collector/health',
-      overviewEndpoint: '/api/overview',
-      streamEndpoint: '/api/stream',
+      storage: store.getStorageStats(),
+      endpoints: {
+        health: '/api/collector/health',
+        telemetry: '/api/overview',
+        events: '/api/events',
+        tokens: '/api/tokens',
+        stream: '/api/stream',
+      },
       timestamp: new Date().toISOString(),
     });
   });
 
   const server = app.listen(PORT, '0.0.0.0', () => {
+    const storageStats = store.getStorageStats();
     console.log(`[ALFITOMS WORKER] Always-on PumpPortal worker listening on http://0.0.0.0:${PORT}`);
+    console.log(
+      `[ALFITOMS WORKER] Storage mode=${storageStats.mode} path=${storageStats.dbPath} persistedTokens=${storageStats.totalPersistedTokens} persistedEvents=${storageStats.totalPersistedEvents}`
+    );
     console.log('[ALFITOMS WORKER] Helius integration: OPTIONAL / SKIPPED');
     // Boot primary free PumpPortal WebSocket collector (subscribeNewToken & subscribeMigration)
     pumpportalCollector.start();

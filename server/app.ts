@@ -180,12 +180,14 @@ export function createApiApp(): express.Express {
 
   // Health Check
   app.get('/api/health', (_req, res) => {
+    store.recomputeStatusCounters();
     res.json({
       ok: true,
       service: 'ALFITOMS FOR DEGEN',
       network: 'solana-mainnet',
       runtimeMode: IS_SERVERLESS ? 'serverless' : 'stateful-worker',
       collectorStatus: store.collectorStatus,
+      storage: store.getStorageStats(),
       timestamp: new Date().toISOString(),
     });
   });
@@ -367,6 +369,42 @@ export function createApiApp(): express.Express {
       });
     }
   });
+
+  // Persisted Token Events Feed
+  const handleEventsQuery = (req: express.Request, res: express.Response) => {
+    try {
+      const settings = store.getSettings();
+      const limit = Math.min(500, Math.max(1, Number(req.query.limit ?? 100) || 100));
+      const mint = typeof req.query.mint === 'string' ? req.query.mint : undefined;
+      const eventType =
+        typeof req.query.eventType === 'string' ? req.query.eventType : undefined;
+      const source = typeof req.query.source === 'string' ? req.query.source : undefined;
+
+      const result = store.getFilteredEvents({
+        limit,
+        mint,
+        eventType,
+        source,
+        includeDemo: settings.demoSampleEnabled,
+      });
+
+      res.json({
+        events: result.events,
+        total: result.total,
+        limit,
+        storageMode: store.getStorageStats().mode,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('[API] /api/events error:', err);
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Failed to query token events.',
+      });
+    }
+  };
+
+  app.get('/api/events', handleEventsQuery);
+  app.get('/api/token-events', handleEventsQuery);
 
   // Token Detail Dossier
   app.get('/api/tokens/:mint', (req, res) => {

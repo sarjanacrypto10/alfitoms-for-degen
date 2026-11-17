@@ -36,11 +36,31 @@ interface PersistedDatabase {
 }
 
 function resolveWritableDataDir(): string {
+  const explicitDir =
+    process.env.DATA_DIR?.trim() || process.env.RAILWAY_VOLUME_MOUNT_PATH?.trim();
   const localDir = path.resolve(process.cwd(), 'data');
   const tmpDir = path.join(os.tmpdir(), 'alfitoms-data');
+
   if (IS_SERVERLESS) {
     return tmpDir;
   }
+
+  if (explicitDir) {
+    try {
+      const resolvedExplicit = path.resolve(explicitDir);
+      if (!fs.existsSync(resolvedExplicit)) {
+        fs.mkdirSync(resolvedExplicit, { recursive: true });
+      }
+      fs.accessSync(resolvedExplicit, fs.constants.W_OK);
+      return resolvedExplicit;
+    } catch (err) {
+      console.warn(
+        `[STORE] Explicit DATA_DIR/RAILWAY_VOLUME_MOUNT_PATH (${explicitDir}) is not writable; falling back:`,
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+
   try {
     if (!fs.existsSync(localDir)) {
       fs.mkdirSync(localDir, { recursive: true });
@@ -52,6 +72,10 @@ function resolveWritableDataDir(): string {
   }
 }
 
+const VOLUME_CONFIGURED = Boolean(
+  !IS_SERVERLESS &&
+    (process.env.DATA_DIR?.trim() || process.env.RAILWAY_VOLUME_MOUNT_PATH?.trim())
+);
 const DATA_DIR = resolveWritableDataDir();
 const DB_PATH = path.join(DATA_DIR, 'alfitoms-db.json');
 
@@ -470,6 +494,39 @@ class TerminalStore {
     return this.db.tokenEvents.slice(0, limit);
   }
 
+  public getFilteredEvents(options?: {
+    limit?: number;
+    mint?: string;
+    eventType?: string;
+    source?: string;
+    includeDemo?: boolean;
+  }): { events: TokenEvent[]; total: number } {
+    const includeDemo = options?.includeDemo ?? false;
+    const mintFilter = options?.mint?.trim().toLowerCase();
+    const typeFilter = options?.eventType?.trim().toLowerCase();
+    const sourceFilter = options?.source?.trim().toLowerCase();
+    const limit = Math.min(500, Math.max(1, options?.limit ?? 100));
+
+    let items = includeDemo
+      ? this.db.tokenEvents
+      : this.db.tokenEvents.filter((e) => !e.isDemo);
+
+    if (mintFilter) {
+      items = items.filter((e) => e.mint.toLowerCase() === mintFilter);
+    }
+    if (typeFilter && typeFilter !== 'all') {
+      items = items.filter((e) => e.eventType.toLowerCase() === typeFilter);
+    }
+    if (sourceFilter && sourceFilter !== 'all') {
+      items = items.filter((e) => e.source.toLowerCase() === sourceFilter);
+    }
+
+    return {
+      events: items.slice(0, limit),
+      total: items.length,
+    };
+  }
+
   public addMarketSnapshot(snapshot: MarketSnapshot): void {
     const arr = this.db.marketSnapshots[snapshot.mint] ?? [];
     arr.unshift(snapshot);
@@ -652,7 +709,10 @@ class TerminalStore {
   }
 
   public getStorageStats(): {
+    mode: 'persistent-volume' | 'local-disk' | 'ephemeral-serverless';
     dataDir: string;
+    dbPath: string;
+    volumeConfigured: boolean;
     totalPersistedTokens: number;
     totalPersistedEvents: number;
     latestPersistedEventAt: string | null;
@@ -660,7 +720,14 @@ class TerminalStore {
     const realTokens = Object.values(this.db.tokens).filter((t) => !t.isDemo);
     const realEvents = this.db.tokenEvents.filter((e) => !e.isDemo);
     return {
+      mode: IS_SERVERLESS
+        ? 'ephemeral-serverless'
+        : VOLUME_CONFIGURED
+          ? 'persistent-volume'
+          : 'local-disk',
       dataDir: DATA_DIR,
+      dbPath: DB_PATH,
+      volumeConfigured: VOLUME_CONFIGURED,
       totalPersistedTokens: realTokens.length,
       totalPersistedEvents: realEvents.length,
       latestPersistedEventAt: realEvents.length > 0 ? realEvents[0].detectedAt : null,

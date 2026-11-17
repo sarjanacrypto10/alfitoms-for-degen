@@ -42,19 +42,26 @@ ALFITOMS FOR DEGEN is a full-stack Solana memecoin discovery and risk intelligen
 
 ## Hosting & Persistent Worker Requirements
 
-### Vercel Deployment (Frontend + Serverless Gateway `/api/*`)
-- `vercel.json` routes all `/api/*` endpoints to `api/index.ts`.
-- **Why PumpPortal & Helius report `DISCONNECTED` on standalone Vercel**: Vercel Serverless Functions freeze immediately after returning an HTTP response and cannot sustain a 24/7 WebSocket client to `wss://pumpportal.fun/api/data`, nor persist captured token events across ephemeral `/tmp` cold starts.
-- **How to connect live 24/7 WebSocket detection to Vercel**:
-  1. Deploy the dedicated always-on worker entrypoint (`worker.ts`) on a persistent Node.js host (Railway, Render Background/Web Service, Fly.io, DigitalOcean, or Cloud Run with `--min-instances=1`) using:
-     ```bash
-     npm install && npm run start:worker
-     ```
-  2. In your **Vercel Project Settings → Environment Variables**, set **`COLLECTOR_WORKER_URL`** (e.g. `https://your-worker.up.railway.app`) so `api/index.ts` proxies `/api/*` requests directly to your live worker with zero frontend rebuild required—or set **`VITE_API_BASE_URL`** for direct browser-to-worker REST + real-time SSE streaming.
-  3. Inspect worker health at `GET /api/collector/health`.
+### Railway Persistent Worker Deployment (`sarjanacrypto10/alfitoms-for-degen`)
+1. In Railway, create a **New Project → Deploy from GitHub Repo** (`sarjanacrypto10/alfitoms-for-degen`).
+2. `railway.json` configures the worker automatically:
+   - **Start Command**: `npm run start:worker` (`worker.ts`)
+   - **Health Check Path**: `/api/collector/health`
+   - **Restart Policy**: `ON_FAILURE` (up to 10 retries)
+3. Attach a **Railway Volume** mounted at `/data` (Railway sets `RAILWAY_VOLUME_MOUNT_PATH=/data`, or set `DATA_DIR=/data`) so `alfitoms-db.json` persists across restarts and deploys.
+4. Generate a public domain for the Railway service in **Settings → Networking**.
+5. Optional environment variables on Railway:
+   - `SOLANA_RPC_URL` (recommended private/faster Solana Mainnet RPC; defaults to `https://api.mainnet-beta.solana.com`)
+   - `GEMINI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `ADMIN_SECRET`
+   - Helius is **OPTIONAL / SKIPPED** and `HELIUS_API_KEY` is **not** required.
 
-### Stateful Persistent Worker Hosting (Single-Service Alternative)
-Run `npm run build && npm run start` (serves both frontend `dist/` and collectors from `server.ts`) on a persistent Node.js host with a writable disk volume for `./data/alfitoms-db.json`.
+### Connecting Vercel (`https://alfitoms-for-degen.vercel.app`) to Railway
+In **Vercel Project Settings → Environment Variables**, set:
+- **`COLLECTOR_WORKER_URL`** = `https://<your-railway-worker-domain>` (no trailing slash) — `api/index.ts` proxies all `/api/*` requests (`/api/overview`, `/api/tokens`, `/api/events`, `/api/collector/health`, `/api/alerts`, `/api/watchlist`) directly to the Railway worker so Vercel and Railway read/write the exact same persisted store without split-brain memory.
+- *(Optional)* **`VITE_API_BASE_URL`** = `https://<your-railway-worker-domain>` — rebuilds Vercel to stream `/api/stream` (SSE) directly from the browser to Railway.
+
+### Local Single-Process Hosting (Alternative)
+Run `npm run build && npm run start` (serves both frontend `dist/` and PumpPortal collector via `server.ts`).
 
 ---
 
@@ -64,16 +71,17 @@ Configure secrets via the host environment or `.env` in local development. Never
 
 | Variable | Required | Purpose |
 | :--- | :--- | :--- |
-| `PORT` | No (default `3000`) | HTTP + SSE server port |
-| `COLLECTOR_WORKER_URL` | On Vercel (for live WS) | Persistent `worker.ts` base URL proxied by `api/index.ts` |
-| `VITE_API_BASE_URL` | Optional | Build-time worker URL for direct browser REST + SSE `/api/stream` |
-| `SOLANA_RPC_URL` | No | Custom Solana Mainnet RPC (defaults to `https://api.mainnet-beta.solana.com`) |
-| `HELIUS_API_KEY` | Optional | Enables Helius Mainnet RPC & configurable `logsSubscribe` program monitoring |
-| `PUMPPORTAL_API_KEY` | Optional | Only required if you opt into paid PumpPortal account/token trade streams |
+| `PORT` | No (default `3000`) | HTTP + SSE server port (injected automatically by Railway) |
+| `DATA_DIR` | On Railway (`/data`) | Persistent directory for `alfitoms-db.json` (auto-reads `RAILWAY_VOLUME_MOUNT_PATH`) |
+| `COLLECTOR_WORKER_URL` | On Vercel | Railway worker base URL proxied by Vercel `api/index.ts` |
+| `VITE_API_BASE_URL` | Optional (Vercel) | Build-time Railway worker URL for direct browser REST + SSE `/api/stream` |
+| `SOLANA_RPC_URL` | Optional | Custom Solana Mainnet RPC (defaults to `https://api.mainnet-beta.solana.com`) |
+| `HELIUS_API_KEY` | Skipped / Optional | Not required; Helius collector initialization is disabled (`OPTIONAL / SKIPPED`) |
+| `PUMPPORTAL_API_KEY` | Optional | Not required for free `subscribeNewToken` & `subscribeMigration` |
 | `TELEGRAM_BOT_TOKEN` | Optional | Enables server-side Telegram alert dispatch |
 | `TELEGRAM_CHAT_ID` | Optional | Target Telegram chat/channel ID for alerts |
 | `GEMINI_API_KEY` | Optional | Enables on-demand Gemini `gemini-4-hydrogen` research brief summaries |
-| `ADMIN_SECRET` | Optional | Protects `POST/PATCH/DELETE /api/programs`, `/api/settings`, and `/api/collector/reconnect` via `x-admin-token` |
+| `ADMIN_SECRET` | Optional | Protects `/api/programs`, `/api/settings`, and `/api/collector/reconnect` via `x-admin-token` |
 
 ---
 
