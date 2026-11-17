@@ -6,8 +6,10 @@ import { eventBus } from './eventBus.ts';
 class HeliusCollector {
   private ws: WebSocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private connectTimeoutTimer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private backoffMs = 3000;
+  private isPongPending = false;
 
   public syncWithSettings(): void {
     const apiKey = process.env.HELIUS_API_KEY?.trim();
@@ -29,6 +31,10 @@ class HeliusCollector {
   }
 
   public stop(reason = 'Helius stream disabled.'): void {
+    if (this.connectTimeoutTimer) {
+      clearTimeout(this.connectTimeoutTimer);
+      this.connectTimeoutTimer = null;
+    }
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
@@ -53,6 +59,10 @@ class HeliusCollector {
   }
 
   private connect(apiKey: string): void {
+    if (this.connectTimeoutTimer) {
+      clearTimeout(this.connectTimeoutTimer);
+      this.connectTimeoutTimer = null;
+    }
     if (this.ws) {
       try {
         this.ws.removeAllListeners();
@@ -78,12 +88,30 @@ class HeliusCollector {
     store.recomputeStatusCounters();
     eventBus.emitStream({ type: 'collector:status', status: store.collectorStatus });
 
-    const ws = new WebSocket(wsUrl, { handshakeTimeout: 10_000 });
+    const ws = new WebSocket(wsUrl, { handshakeTimeout: 12_000 });
     this.ws = ws;
 
+    this.connectTimeoutTimer = setTimeout(() => {
+      if (ws.readyState === WebSocket.CONNECTING) {
+        store.collectorStatus.helius.status = 'ERROR';
+        store.collectorStatus.helius.lastError = 'Helius WS handshake timed out after 15s.';
+        store.addLog('helius', 'error', 'Helius WS handshake timed out after 15s.');
+        try {
+          ws.terminate();
+        } catch {
+          // Ignore
+        }
+      }
+    }, 15_000);
+
     ws.on('open', () => {
+      if (this.connectTimeoutTimer) {
+        clearTimeout(this.connectTimeoutTimer);
+        this.connectTimeoutTimer = null;
+      }
       const now = new Date().toISOString();
       this.backoffMs = 3000;
+      this.isPongPending = false;
       store.collectorStatus.helius.status = 'LIVE';
       store.collectorStatus.helius.lastConnectedAt = now;
       store.collectorStatus.helius.lastHeartbeatAt = now;
@@ -109,14 +137,29 @@ class HeliusCollector {
       eventBus.emitStream({ type: 'collector:status', status: store.collectorStatus });
 
       this.heartbeatTimer = setInterval(() => {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+        if (this.isPongPending) {
+          store.addLog('helius', 'warn', 'Helius WS heartbeat timeout; reconnecting.');
+          this.ws.terminate();
+          return;
+        }
+        this.isPongPending = true;
+        try {
           this.ws.ping();
           store.collectorStatus.helius.lastHeartbeatAt = new Date().toISOString();
+        } catch {
+          this.ws.terminate();
         }
       }, 30_000);
     });
 
+    ws.on('pong', () => {
+      this.isPongPending = false;
+      store.collectorStatus.helius.lastHeartbeatAt = new Date().toISOString();
+    });
+
     ws.on('message', (raw) => {
+      this.isPongPending = false;
       try {
         const parsed = JSON.parse(raw.toString('utf8')) as {
           method?: string;
@@ -168,14 +211,20 @@ class HeliusCollector {
 
     ws.on('error', (err) => {
       const msg = err instanceof Error ? err.message : 'Helius WS error';
+      // Redact any accidental API key query string from error messages
+      const safeMsg = msg.replace(/api-key=[^&\s]+/gi, 'api-key=[REDACTED]');
       store.collectorStatus.helius.status = 'ERROR';
-      store.collectorStatus.helius.lastError = msg;
+      store.collectorStatus.helius.lastError = safeMsg;
       store.recomputeStatusCounters();
-      store.addLog('helius', 'error', msg);
+      store.addLog('helius', 'error', safeMsg);
       eventBus.emitStream({ type: 'collector:status', status: store.collectorStatus });
     });
 
     ws.on('close', () => {
+      if (this.connectTimeoutTimer) {
+        clearTimeout(this.connectTimeoutTimer);
+        this.connectTimeoutTimer = null;
+      }
       if (this.heartbeatTimer) {
         clearInterval(this.heartbeatTimer);
         this.heartbeatTimer = null;

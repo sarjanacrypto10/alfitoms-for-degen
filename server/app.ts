@@ -245,7 +245,7 @@ export function createApiApp(): express.Express {
       const detectedToday = realTokens.filter(
         (t) => new Date(t.detectedAt).getTime() >= startOfDay
       );
-      const newLaunches = detectedToday.filter((t) => t.source === 'pumpportal-create');
+      const newLaunchesCount = store.getCreateMintsTodayCount(startOfDay);
       const migratedTokens = realTokens.filter((t) => t.migrated);
       const totalMonitoredVolumeUsd = realTokens.reduce(
         (sum, t) => sum + (t.volume24hUsd ?? 0),
@@ -273,7 +273,7 @@ export function createApiApp(): express.Express {
         metrics: {
           totalDetectedTokens: realTokens.length,
           tokensDetectedToday: detectedToday.length,
-          newLaunches: newLaunches.length,
+          newLaunches: newLaunchesCount,
           migratedTokens: migratedTokens.length,
           totalMonitoredVolumeUsd,
           highRiskAlerts,
@@ -686,7 +686,58 @@ export function createApiApp(): express.Express {
     res.status(result.ok ? 200 : 400).json(result);
   });
 
-  // Collector Health, Logs & Controls
+  // Collector Health, Status, Logs & Controls
+  app.get('/api/collector/health', (_req, res) => {
+    store.recomputeStatusCounters();
+    const st = store.collectorStatus;
+    const storageStats = store.getStorageStats();
+    res.json({
+      ok: true,
+      service: 'ALFITOMS FOR DEGEN Collector',
+      network: 'solana-mainnet',
+      runtimeMode: IS_SERVERLESS ? 'serverless' : 'stateful-worker',
+      collectorLive: st.pumpportal.status === 'LIVE',
+      pumpportal: {
+        status: st.pumpportal.status,
+        connected: st.pumpportal.status === 'LIVE',
+        endpoint: st.pumpportal.endpoint,
+        subscribedMethods: st.pumpportal.subscribedMethods ?? [
+          'subscribeNewToken',
+          'subscribeMigration',
+        ],
+        subscriptionsAcked: st.pumpportal.subscriptionsAcked ?? {
+          newToken: false,
+          migration: false,
+        },
+        lastConnectedAt: st.pumpportal.lastConnectedAt,
+        lastHeartbeatAt: st.pumpportal.lastHeartbeatAt,
+        lastEventAt: st.pumpportal.lastEventAt,
+        lastSuccessAt: st.pumpportal.lastSuccessAt,
+        reconnectCount: st.pumpportal.reconnectCount,
+        eventsReceived: st.pumpportal.eventsReceived,
+        persistedEventsCount: st.pumpportal.persistedEventsCount ?? 0,
+        lastError: st.pumpportal.lastError,
+      },
+      helius: {
+        optional: true,
+        status: st.helius.status,
+        connected: st.helius.status === 'LIVE',
+        enabled: st.helius.enabled,
+        hasKeyConfigured: st.helius.hasKeyConfigured,
+        endpoint: st.helius.endpoint,
+        lastConnectedAt: st.helius.lastConnectedAt,
+        lastHeartbeatAt: st.helius.lastHeartbeatAt,
+        lastEventAt: st.helius.lastEventAt,
+        reconnectCount: st.helius.reconnectCount,
+        eventsReceived: st.helius.eventsReceived,
+        lastError: st.helius.lastError,
+      },
+      storage: storageStats,
+      collectorStatus: st,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
   app.get('/api/collector/status', (_req, res) => {
     store.recomputeStatusCounters();
     res.json(store.collectorStatus);

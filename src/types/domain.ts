@@ -249,6 +249,12 @@ export interface CollectorHealth {
   lastSuccessAt: string | null;
   reconnectCount: number;
   eventsReceived: number;
+  persistedEventsCount?: number;
+  subscribedMethods?: string[];
+  subscriptionsAcked?: {
+    newToken: boolean;
+    migration: boolean;
+  };
   lastError: string | null;
 }
 

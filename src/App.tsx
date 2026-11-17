@@ -71,6 +71,7 @@ export default function App() {
             type?: string;
             status?: CollectorStatusState;
             serverless?: boolean;
+            proxiedWorker?: boolean;
           };
           if (payload.type === 'snapshot' || payload.type === 'collector:status') {
             if (payload.status) {
@@ -79,10 +80,11 @@ export default function App() {
             if (payload.serverless) {
               isServerlessStream = true;
               es?.close();
+              const intervalMs = payload.proxiedWorker ? 5_000 : 30_000;
               if (!pollTimer) {
                 pollTimer = setInterval(() => {
                   void loadOverview();
-                }, 30_000);
+                }, intervalMs);
               }
             }
           } else if (

@@ -159,6 +159,13 @@ class TerminalStore {
       process.env.TELEGRAM_BOT_TOKEN?.trim() && process.env.TELEGRAM_CHAT_ID?.trim()
     );
 
+    const pumpEvents = this.db.tokenEvents.filter(
+      (e) =>
+        !e.isDemo &&
+        (e.source === 'pumpportal-create' || e.source === 'pumpportal-migration')
+    );
+    const latestPumpEventAt = pumpEvents.length > 0 ? pumpEvents[0].detectedAt : null;
+
     this.collectorStatus = {
       pumpportal: {
         name: 'pumpportal',
@@ -170,12 +177,15 @@ class TerminalStore {
         endpoint: 'wss://pumpportal.fun/api/data',
         lastConnectedAt: null,
         lastHeartbeatAt: null,
-        lastEventAt: null,
-        lastSuccessAt: null,
+        lastEventAt: latestPumpEventAt,
+        lastSuccessAt: latestPumpEventAt,
         reconnectCount: 0,
-        eventsReceived: 0,
+        eventsReceived: pumpEvents.length,
+        persistedEventsCount: pumpEvents.length,
+        subscribedMethods: ['subscribeNewToken', 'subscribeMigration'],
+        subscriptionsAcked: { newToken: false, migration: false },
         lastError: IS_SERVERLESS
-          ? 'Serverless runtime cannot sustain a persistent WebSocket. On-demand Solana RPC & DexScreener APIs remain active; host server.ts on a stateful Node worker for 24/7 WebSocket detection.'
+          ? 'Serverless runtime cannot sustain a persistent WebSocket. Deploy worker.ts on an always-on host and set COLLECTOR_WORKER_URL or VITE_API_BASE_URL.'
           : null,
       },
       helius: {
@@ -644,6 +654,41 @@ class TerminalStore {
     return this.db.settings;
   }
 
+  public getStorageStats(): {
+    dataDir: string;
+    totalPersistedTokens: number;
+    totalPersistedEvents: number;
+    latestPersistedEventAt: string | null;
+  } {
+    const realTokens = Object.values(this.db.tokens).filter((t) => !t.isDemo);
+    const realEvents = this.db.tokenEvents.filter((e) => !e.isDemo);
+    return {
+      dataDir: DATA_DIR,
+      totalPersistedTokens: realTokens.length,
+      totalPersistedEvents: realEvents.length,
+      latestPersistedEventAt: realEvents.length > 0 ? realEvents[0].detectedAt : null,
+    };
+  }
+
+  public getCreateMintsTodayCount(startOfDayMs: number): number {
+    const realTokens = Object.values(this.db.tokens).filter((t) => !t.isDemo);
+    const createEventMintsToday = new Set(
+      this.db.tokenEvents
+        .filter(
+          (e) =>
+            !e.isDemo &&
+            e.eventType === 'create' &&
+            new Date(e.detectedAt).getTime() >= startOfDayMs
+        )
+        .map((e) => e.mint)
+    );
+    return realTokens.filter(
+      (t) =>
+        new Date(t.detectedAt).getTime() >= startOfDayMs &&
+        (t.source === 'pumpportal-create' || createEventMintsToday.has(t.mint))
+    ).length;
+  }
+
   public recomputeStatusCounters(): void {
     const now = new Date();
     const startOfDay = new Date(
@@ -654,8 +699,13 @@ class TerminalStore {
     const tokensToday = realTokens.filter(
       (t) => new Date(t.detectedAt).getTime() >= startOfDay
     );
-    const newLaunchesToday = tokensToday.filter((t) => t.source === 'pumpportal-create');
+    const newLaunchesTodayCount = this.getCreateMintsTodayCount(startOfDay);
     const migratedTotal = realTokens.filter((t) => t.migrated);
+    const persistedPumpEvents = this.db.tokenEvents.filter(
+      (e) =>
+        !e.isDemo &&
+        (e.source === 'pumpportal-create' || e.source === 'pumpportal-migration')
+    ).length;
 
     const scope: string[] = [];
     if (this.collectorStatus.pumpportal.status === 'LIVE') {
@@ -672,9 +722,10 @@ class TerminalStore {
     scope.push('DexScreener Public API (On-Demand & Cached)');
     scope.push('Solana Mainnet RPC (Deterministic Audits)');
 
+    this.collectorStatus.pumpportal.persistedEventsCount = persistedPumpEvents;
     this.collectorStatus.totalDetectedTokens = realTokens.length;
     this.collectorStatus.tokensDetectedToday = tokensToday.length;
-    this.collectorStatus.newLaunchesToday = newLaunchesToday.length;
+    this.collectorStatus.newLaunchesToday = newLaunchesTodayCount;
     this.collectorStatus.migratedTokensTotal = migratedTotal.length;
     this.collectorStatus.activeMonitoringScope = scope;
     this.collectorStatus.updatedAt = new Date().toISOString();

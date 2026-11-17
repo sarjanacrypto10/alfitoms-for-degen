@@ -36,11 +36,13 @@ function toOptionalNumber(val: unknown): number | null {
 class PumpPortalCollector {
   private ws: WebSocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private connectTimeoutTimer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private backoffMs = 1500;
   private maxBackoffMs = 60_000;
   private isManuallyStopped = false;
   private isPongPending = false;
+  private lastActivityMs = 0;
 
   public start(): void {
     this.isManuallyStopped = false;
@@ -66,11 +68,19 @@ class PumpPortalCollector {
       this.reconnectTimer = null;
     }
     store.collectorStatus.pumpportal.status = 'DISCONNECTED';
+    store.collectorStatus.pumpportal.subscriptionsAcked = {
+      newToken: false,
+      migration: false,
+    };
     store.recomputeStatusCounters();
     eventBus.emitStream({ type: 'collector:status', status: store.collectorStatus });
   }
 
   private cleanupSocket(): void {
+    if (this.connectTimeoutTimer) {
+      clearTimeout(this.connectTimeoutTimer);
+      this.connectTimeoutTimer = null;
+    }
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
@@ -91,34 +101,74 @@ class PumpPortalCollector {
     }
   }
 
+  private sendFreeSubscriptions(ws: WebSocket): void {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    store.collectorStatus.pumpportal.subscribedMethods = [
+      'subscribeNewToken',
+      'subscribeMigration',
+    ];
+    store.collectorStatus.pumpportal.subscriptionsAcked = {
+      newToken: false,
+      migration: false,
+    };
+    // Free documented subscriptions only; paid/metered methods are never auto-enabled.
+    ws.send(JSON.stringify({ method: 'subscribeNewToken' }));
+    ws.send(JSON.stringify({ method: 'subscribeMigration' }));
+  }
+
   private connect(): void {
     if (this.isManuallyStopped) return;
     this.cleanupSocket();
 
     store.collectorStatus.pumpportal.status = 'CONNECTING';
+    store.collectorStatus.pumpportal.enabled = true;
+    store.collectorStatus.pumpportal.subscriptionsAcked = {
+      newToken: false,
+      migration: false,
+    };
     store.recomputeStatusCounters();
     eventBus.emitStream({ type: 'collector:status', status: store.collectorStatus });
     store.addLog('pumpportal', 'info', `Connecting to ${PUMPPORTAL_WS_URL}`);
 
     const ws = new WebSocket(PUMPPORTAL_WS_URL, {
-      handshakeTimeout: 10_000,
+      handshakeTimeout: 12_000,
     });
     this.ws = ws;
 
+    this.connectTimeoutTimer = setTimeout(() => {
+      if (ws.readyState === WebSocket.CONNECTING) {
+        const timeoutMsg = 'PumpPortal WebSocket connection timed out after 15s.';
+        store.collectorStatus.pumpportal.status = 'ERROR';
+        store.collectorStatus.pumpportal.lastError = timeoutMsg;
+        store.recomputeStatusCounters();
+        store.addLog('pumpportal', 'error', timeoutMsg);
+        eventBus.emitStream({ type: 'collector:status', status: store.collectorStatus });
+        try {
+          ws.terminate();
+        } catch {
+          // Ignore terminate error
+        }
+      }
+    }, 15_000);
+
     ws.on('open', () => {
+      if (this.connectTimeoutTimer) {
+        clearTimeout(this.connectTimeoutTimer);
+        this.connectTimeoutTimer = null;
+      }
+
       const now = new Date().toISOString();
       this.backoffMs = 1500;
       this.isPongPending = false;
+      this.lastActivityMs = Date.now();
 
       store.collectorStatus.pumpportal.status = 'LIVE';
       store.collectorStatus.pumpportal.lastConnectedAt = now;
       store.collectorStatus.pumpportal.lastHeartbeatAt = now;
       store.collectorStatus.pumpportal.lastError = null;
-      store.recomputeStatusCounters();
 
-      // Free documented subscriptions only; paid/metered methods are never auto-enabled.
-      ws.send(JSON.stringify({ method: 'subscribeNewToken' }));
-      ws.send(JSON.stringify({ method: 'subscribeMigration' }));
+      this.sendFreeSubscriptions(ws);
+      store.recomputeStatusCounters();
 
       store.addLog(
         'pumpportal',
@@ -129,8 +179,13 @@ class PumpPortalCollector {
 
       this.heartbeatTimer = setInterval(() => {
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-        if (this.isPongPending) {
-          store.addLog('pumpportal', 'warn', 'PumpPortal WebSocket heartbeat timeout; reconnecting.');
+        const idleMs = Date.now() - this.lastActivityMs;
+        if (this.isPongPending && idleMs > 50_000) {
+          store.addLog(
+            'pumpportal',
+            'warn',
+            'PumpPortal WebSocket heartbeat & activity timeout; reconnecting.'
+          );
           this.ws.terminate();
           return;
         }
@@ -146,10 +201,13 @@ class PumpPortalCollector {
 
     ws.on('pong', () => {
       this.isPongPending = false;
+      this.lastActivityMs = Date.now();
       store.collectorStatus.pumpportal.lastHeartbeatAt = new Date().toISOString();
     });
 
     ws.on('message', (rawData) => {
+      this.lastActivityMs = Date.now();
+      this.isPongPending = false;
       try {
         const text = rawData.toString('utf8');
         const parsed = JSON.parse(text) as PumpPortalRawPayload;
@@ -170,8 +228,13 @@ class PumpPortalCollector {
     });
 
     ws.on('close', (code, reason) => {
+      const preservedError = store.collectorStatus.pumpportal.lastError;
       this.cleanupSocket();
       const reasonStr = reason?.toString('utf8') || `code ${code}`;
+      store.collectorStatus.pumpportal.subscriptionsAcked = {
+        newToken: false,
+        migration: false,
+      };
       if (this.isManuallyStopped) {
         store.collectorStatus.pumpportal.status = 'DISCONNECTED';
         store.recomputeStatusCounters();
@@ -180,7 +243,10 @@ class PumpPortalCollector {
       }
 
       store.collectorStatus.pumpportal.status = 'DISCONNECTED';
-      store.collectorStatus.pumpportal.lastError = `Disconnected (${reasonStr})`;
+      store.collectorStatus.pumpportal.lastError =
+        preservedError && preservedError.includes('timed out')
+          ? preservedError
+          : `Disconnected (${reasonStr})`;
       store.recomputeStatusCounters();
       store.addLog('pumpportal', 'warn', `Connection closed (${reasonStr}).`);
       eventBus.emitStream({ type: 'collector:status', status: store.collectorStatus });
@@ -193,10 +259,11 @@ class PumpPortalCollector {
 
   private scheduleReconnect(): void {
     if (this.reconnectTimer || this.isManuallyStopped) return;
-    const delay = this.backoffMs;
+    const jitter = Math.round(this.backoffMs * (Math.random() * 0.2 - 0.1));
+    const delay = Math.max(1000, this.backoffMs + jitter);
     this.backoffMs = Math.min(this.maxBackoffMs, Math.round(this.backoffMs * 1.8));
     store.collectorStatus.pumpportal.reconnectCount += 1;
-    store.addLog('pumpportal', 'info', `Scheduling reconnect in ${Math.round(delay / 1000)}s`);
+    store.addLog('pumpportal', 'info', `Scheduling reconnect in ${(delay / 1000).toFixed(1)}s`);
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -206,8 +273,31 @@ class PumpPortalCollector {
 
   private async handleIncomingMessage(payload: PumpPortalRawPayload): Promise<void> {
     if (!payload || typeof payload !== 'object') return;
+
+    if (typeof payload.errors === 'string' || typeof payload.error === 'string') {
+      const errMsg = String(payload.errors ?? payload.error);
+      store.collectorStatus.pumpportal.lastError = errMsg;
+      store.addLog('pumpportal', 'error', `PumpPortal WS error notice: ${errMsg}`);
+      eventBus.emitStream({ type: 'collector:status', status: store.collectorStatus });
+      return;
+    }
+
     if (typeof payload.message === 'string' && !payload.mint) {
-      store.addLog('pumpportal', 'info', `PumpPortal notice: ${payload.message}`);
+      const notice = payload.message;
+      const lower = notice.toLowerCase();
+      const acks = store.collectorStatus.pumpportal.subscriptionsAcked ?? {
+        newToken: false,
+        migration: false,
+      };
+      if (lower.includes('token creation')) {
+        acks.newToken = true;
+      }
+      if (lower.includes('migration')) {
+        acks.migration = true;
+      }
+      store.collectorStatus.pumpportal.subscriptionsAcked = acks;
+      store.addLog('pumpportal', 'info', `PumpPortal notice: ${notice}`);
+      eventBus.emitStream({ type: 'collector:status', status: store.collectorStatus });
       return;
     }
 
@@ -312,10 +402,18 @@ class PumpPortalCollector {
 
     eventBus.emitStream({ type: 'token:detected', token, event });
     eventBus.emitStream({ type: 'collector:status', status: store.collectorStatus });
-    await evaluateTokenAlertRules(token, {
-      isNew: !existing && !isMigration,
-      isMigration,
-    });
+    try {
+      await evaluateTokenAlertRules(token, {
+        isNew: !existing && !isMigration,
+        isMigration,
+      });
+    } catch (err) {
+      store.addLog(
+        'pumpportal',
+        'warn',
+        `Alert rule evaluation failed for ${mint}: ${err instanceof Error ? err.message : 'unknown error'}`
+      );
+    }
   }
 }
 

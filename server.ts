@@ -6,6 +6,8 @@ import { createApiApp } from './server/app.ts';
 import { heliusCollector } from './server/services/heliusCollector.ts';
 import { pumpportalCollector } from './server/services/pumpportalCollector.ts';
 
+import { store } from './server/storage/store.ts';
+
 const PORT = Number(process.env.PORT || 3000);
 const IS_PROD = process.env.NODE_ENV === 'production';
 
@@ -27,12 +29,24 @@ async function startServer(): Promise<void> {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`[ALFITOMS FOR DEGEN] Server running on http://0.0.0.0:${PORT}`);
     // Boot persistent server-side WebSocket collectors
     pumpportalCollector.start();
     heliusCollector.syncWithSettings();
   });
+
+  const shutdown = (signal: string) => {
+    console.log(`[ALFITOMS FOR DEGEN] Received ${signal}, flushing persisted store...`);
+    pumpportalCollector.stop();
+    heliusCollector.stop('Server shutting down.');
+    store.persistNow();
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 3000).unref();
+  };
+
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
 }
 
 void startServer();

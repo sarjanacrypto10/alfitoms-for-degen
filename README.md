@@ -42,24 +42,31 @@ ALFITOMS FOR DEGEN is a full-stack Solana memecoin discovery and risk intelligen
 
 ## Hosting & Persistent Worker Requirements
 
-### Vercel Deployment (Frontend + Serverless `/api/*`)
-- `vercel.json` routes all `/api/*` endpoints to the Express serverless entrypoint at `api/index.ts`.
-- On Vercel, stateless on-demand features (**Overview**, **DexScreener Market Enrichment**, **Trending Tokens**, **Solana Mainnet RPC Risk Scanner**, **Wallet Intelligence**, **Watchlist**, **Alerts**, **Settings**) run natively via `api/index.ts`.
-- Because Vercel Serverless Functions cannot hold a WebSocket open continuously, the live **PumpPortal WebSocket** collector reports `DISCONNECTED` in serverless mode unless you also host `server.ts` on a stateful Node.js worker and point `VITE_API_BASE_URL` to that worker URL.
+### Vercel Deployment (Frontend + Serverless Gateway `/api/*`)
+- `vercel.json` routes all `/api/*` endpoints to `api/index.ts`.
+- **Why PumpPortal & Helius report `DISCONNECTED` on standalone Vercel**: Vercel Serverless Functions freeze immediately after returning an HTTP response and cannot sustain a 24/7 WebSocket client to `wss://pumpportal.fun/api/data`, nor persist captured token events across ephemeral `/tmp` cold starts.
+- **How to connect live 24/7 WebSocket detection to Vercel**:
+  1. Deploy the dedicated always-on worker entrypoint (`worker.ts`) on a persistent Node.js host (Railway, Render Background/Web Service, Fly.io, DigitalOcean, or Cloud Run with `--min-instances=1`) using:
+     ```bash
+     npm install && npm run start:worker
+     ```
+  2. In your **Vercel Project Settings → Environment Variables**, set **`COLLECTOR_WORKER_URL`** (e.g. `https://your-worker.up.railway.app`) so `api/index.ts` proxies `/api/*` requests directly to your live worker with zero frontend rebuild required—or set **`VITE_API_BASE_URL`** for direct browser-to-worker REST + real-time SSE streaming.
+  3. Inspect worker health at `GET /api/collector/health`.
 
-### Stateful Persistent Worker Hosting (Full 24/7 WebSocket Detection)
-1. **Single-Service Stateful Container / VPS**: Run `npm run build && npm run start` on a persistent Node.js host (Fly.io, Railway, Render Web Service, DigitalOcean, or Google Cloud Run with `--min-instances=1` and CPU always allocated).
-2. **Separated Worker Architecture**: Deploy the frontend on Vercel and run `server.ts` on a persistent Node.js worker, then set `VITE_API_BASE_URL` in Vercel to the worker's HTTPS URL.
+### Stateful Persistent Worker Hosting (Single-Service Alternative)
+Run `npm run build && npm run start` (serves both frontend `dist/` and collectors from `server.ts`) on a persistent Node.js host with a writable disk volume for `./data/alfitoms-db.json`.
 
 ---
 
 ## Environment Variables
 
-Configure secrets via the **Settings > Secrets** panel (or `.env` in local development). Never expose secrets in client-side code.
+Configure secrets via the host environment or `.env` in local development. Never expose secrets in client-side code.
 
 | Variable | Required | Purpose |
 | :--- | :--- | :--- |
 | `PORT` | No (default `3000`) | HTTP + SSE server port |
+| `COLLECTOR_WORKER_URL` | On Vercel (for live WS) | Persistent `worker.ts` base URL proxied by `api/index.ts` |
+| `VITE_API_BASE_URL` | Optional | Build-time worker URL for direct browser REST + SSE `/api/stream` |
 | `SOLANA_RPC_URL` | No | Custom Solana Mainnet RPC (defaults to `https://api.mainnet-beta.solana.com`) |
 | `HELIUS_API_KEY` | Optional | Enables Helius Mainnet RPC & configurable `logsSubscribe` program monitoring |
 | `PUMPPORTAL_API_KEY` | Optional | Only required if you opt into paid PumpPortal account/token trade streams |
